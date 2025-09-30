@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import imageCompression from 'browser-image-compression';
 import Cropper from 'react-easy-crop';
 import JSZip from 'jszip';
 
@@ -10,8 +9,6 @@ interface ImagePair {
 }
 
 type AspectRatioOption = 'original' | '16:9' | '4:3' | '1:1' | 'custom';
-
-const MAX_WIDTH = 400;
 
 function getAspectRatio(option: AspectRatioOption, customW: number, customH: number, imgW: number, imgH: number) {
   switch (option) {
@@ -42,7 +39,7 @@ function App() {
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragActive, setIsDragActive] = useState<boolean>(false);
-  const [watermarkFontSize, setWatermarkFontSize] = useState<number>(18);
+  const [watermarkFontSize, setWatermarkFontSize] = useState<number>(20); // default to 72, allow larger
   const [watermarkColor, setWatermarkColor] = useState<string>('#ffffff');
   const [showCCIcon, setShowCCIcon] = useState<boolean>(false);
   const [watermarkPosition, setWatermarkPosition] = useState<'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'>('bottom-right');
@@ -51,9 +48,9 @@ function App() {
   // Initial File Upload
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (!event.target.files) return;
-    const files = Array.from(event.target.files);
+    const files = Array.from(event.target.files) as File[];
     setImageFiles(files);
-    setImageUrls(files.map((f: File) => URL.createObjectURL(f)));
+    setImageUrls(files.map((f) => URL.createObjectURL(f)));
     setCropStates(files.map(() => ({
       crop: { x: 0, y: 0 },
       zoom: 1,
@@ -68,11 +65,12 @@ function App() {
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setIsDragActive(false);
-    const files = Array.from(event.dataTransfer.files).filter((f: File) => f.type.startsWith('image/'));
-    if (files.length === 0) return;
-    setImageFiles(files);
-    setImageUrls(files.map((f: File) => URL.createObjectURL(f)));
-    setCropStates(files.map(() => ({
+    const files = Array.from(event.dataTransfer.files) as File[];
+    const imageFilesOnly = files.filter((f) => f.type.startsWith('image/'));
+    if (imageFilesOnly.length === 0) return;
+    setImageFiles(imageFilesOnly);
+    setImageUrls(imageFilesOnly.map((f) => URL.createObjectURL(f)));
+    setCropStates(imageFilesOnly.map(() => ({
       crop: { x: 0, y: 0 },
       zoom: 1,
       croppedAreaPixels: null,
@@ -93,7 +91,7 @@ function App() {
     fileInputRef.current?.click();
   };
 
-  // Preview für ein Bild generieren
+  // Preview für ein Bild generieren (schnell, ohne Komprimierung über Backend)
   const updatePreviewForIndex = async (idx: number, cropStateOverride?: Partial<typeof cropStates[0]>) => {
     const file = imageFiles[idx];
     const imgUrl = imageUrls[idx];
@@ -107,53 +105,50 @@ function App() {
       cropState.customW,
       cropState.customH
     );
-    // Komprimierung: verlustfrei
-    let compressedFile: File | Blob = croppedBlob;
-    if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
-      compressedFile = await imageCompression(croppedBlob, {
-        quality: 1.0,
-        fileType: 'image/jpeg',
-        maxSizeMB: 10,
-      });
-    } else if (file.type === 'image/png') {
-      // PNG: keine Komprimierung, nur Resize falls nötig
-      compressedFile = await imageCompression(croppedBlob, {
-        fileType: 'image/png',
-        maxSizeMB: 10,
-        quality: 1.0,
-      });
-    }
-    const text = showCopyrightSymbol ? `© ${watermarkText}` : watermarkText;
-    const watermarkedUrl = await addWatermarkToImage(compressedFile, text, file.type);
-    setPreviewUrls(prev => {
+    // Für die Vorschau: keine Komprimierung über Backend, sondern direkt Wasserzeichen auf Cropped-Blob
+    const text = showCopyrightSymbol ? `© ${watermarkText.replace(/^©\s*/, '')}` : watermarkText.replace(/^©\s*/, '');
+    const watermarkedUrl = await addWatermarkToImage(croppedBlob, text, file.type);
+    setPreviewUrls((prev: string[]) => {
       const next = [...prev];
       next[idx] = watermarkedUrl;
       return next;
     });
-    setCompressedSizes(prev => {
+    setCompressedSizes((prev: number[]) => {
       const next = [...prev];
-      next[idx] = compressedFile.size;
+      next[idx] = croppedBlob.size;
       return next;
+    });
+  };
+
+  // Toggle für Copyright-Symbol
+  const handleToggleCopyright = () => {
+    setShowCopyrightSymbol((prev) => {
+      const newValue = !prev;
+      setWatermarkText((oldText) => {
+        const cleanText = oldText.replace(/^©\s*/, '');
+        return newValue ? `© ${cleanText}` : cleanText;
+      });
+      return newValue;
     });
   };
 
   // Cropping-Callback pro Bild
   const onCropChange = (idx: number, crop: { x: number; y: number }) => {
-    setCropStates(prev => {
+    setCropStates((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], crop };
       return next;
     });
   };
   const onZoomChange = (idx: number, zoom: number) => {
-    setCropStates(prev => {
+    setCropStates((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], zoom };
       return next;
     });
   };
   const onCropComplete = (idx: number, croppedArea: any, croppedAreaPixels: any) => {
-    setCropStates(prev => {
+    setCropStates((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], croppedAreaPixels };
       return next;
@@ -164,21 +159,21 @@ function App() {
 
   // Seitenverhältnis pro Bild ändern
   const handleAspectRatioChange = (idx: number, value: AspectRatioOption) => {
-    setCropStates(prev => {
+    setCropStates((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], aspectRatio: value };
       return next;
     });
   };
   const handleCustomWChange = (idx: number, value: number) => {
-    setCropStates(prev => {
+    setCropStates((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], customW: value };
       return next;
     });
   };
   const handleCustomHChange = (idx: number, value: number) => {
-    setCropStates(prev => {
+    setCropStates((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], customH: value };
       return next;
@@ -197,7 +192,7 @@ function App() {
     // eslint-disable-next-line
   }, [imageFiles, imageUrls, watermarkText, watermarkFontSize, watermarkColor, watermarkPosition, showCopyrightSymbol]);
 
-  // Cropping, Komprimierung, Wasserzeichen für alle Bilder
+  // Cropping, Wasserzeichen für alle Bilder
   const handleProcessAll = async () => {
     setIsProcessing(true);
     const pairs: ImagePair[] = [];
@@ -206,12 +201,7 @@ function App() {
       const imgUrl = imageUrls[i];
       const cropState = cropStates[i];
       const croppedBlob = await getCroppedImg(imgUrl, cropState.croppedAreaPixels, file, cropState.aspectRatio, cropState.customW, cropState.customH);
-      const compressedFile = await imageCompression(croppedBlob, {
-        maxWidthOrHeight: MAX_WIDTH,
-        useWebWorker: true,
-        initialQuality: 0.7,
-      });
-      const watermarkedUrl = await addWatermarkToImage(compressedFile, watermarkText);
+      const watermarkedUrl = await addWatermarkToImage(croppedBlob, watermarkText);
       pairs.push({ originalUrl: imgUrl, croppedUrl: watermarkedUrl, name: file.name });
     }
     setPreviewUrls(pairs.map(pair => pair.croppedUrl));
@@ -263,9 +253,9 @@ function App() {
       img.src = URL.createObjectURL(file);
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        // Keine Resize mehr, immer Originalgröße
-        canvas.width = img.width;
-        canvas.height = img.height;
+        // Bildgröße exakt übernehmen, kein Resize, kein doppeltes Zeichnen
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d');
         if (!ctx) return resolve(img.src);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -277,11 +267,11 @@ function App() {
         let x = watermarkPosition.includes('right') ? canvas.width - offset : offset;
         let y = watermarkPosition.includes('bottom') ? canvas.height - offset : offset;
         ctx.fillText(text, x, y);
-        // Speichere mit Qualität 1.0
+        // Komprimierte Vorschau: Qualität 0.8 statt 1.0
         if (fileType === 'image/png') {
           resolve(canvas.toDataURL('image/png'));
         } else {
-          resolve(canvas.toDataURL('image/jpeg', 1.0));
+          resolve(canvas.toDataURL('image/jpeg', 0.8));
         }
       };
     });
@@ -358,14 +348,15 @@ function App() {
               <div className="flex flex-col md:flex-row items-center gap-2">
                 <label className="font-semibold">Größe:</label>
                 <input
-                  type="range"
+                  type="number"
                   min={10}
-                  max={64}
+                  max={999}
                   value={watermarkFontSize}
                   onChange={e => setWatermarkFontSize(Number(e.target.value))}
-                  className="w-32"
+                  className="w-24 border rounded px-1 py-1"
+                  style={{maxWidth: '80px'}}
                 />
-                <span className="w-10 text-center">{watermarkFontSize}px</span>
+                <span className="w-16 text-center">{watermarkFontSize}px</span>
                 <label className="font-semibold ml-4">Farbe:</label>
                 <input
                   type="color"
@@ -374,20 +365,19 @@ function App() {
                   className="w-8 h-8 p-0 border-0 bg-transparent"
                   title="Farbe wählen"
                 />
-                {/* Slide Toggle für CC-Icon + Trademark */}
+                {/* Copyright Toggle als Slide Switch */}
                 <label className="flex items-center ml-4 cursor-pointer select-none">
-                  <span className="mr-2">™</span>
-                  <span className="mr-2">CC-Icon</span>
+                  <span className="mr-2">©</span>
                   <span className="relative inline-block w-10 align-middle select-none transition duration-200 ease-in">
                     <input
                       type="checkbox"
-                      checked={showCCIcon}
-                      onChange={() => setShowCCIcon(v => !v)}
+                      checked={showCopyrightSymbol}
+                      onChange={handleToggleCopyright}
                       className="absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer transition-all duration-200 ease-in shadow"
-                      style={{ left: showCCIcon ? '20px' : '0px', top: '0px' }}
+                      style={{ left: showCopyrightSymbol ? '20px' : '0px', top: '0px' }}
                     />
                     <span
-                      className={`block overflow-hidden h-6 rounded-full bg-gray-300 transition-all duration-200 ease-in ${showCCIcon ? 'bg-blue-600' : ''}`}
+                      className={`block overflow-hidden h-6 rounded-full bg-gray-300 transition-all duration-200 ease-in ${showCopyrightSymbol ? 'bg-blue-600' : ''}`}
                       style={{ width: '40px' }}
                     ></span>
                   </span>
@@ -486,9 +476,6 @@ function App() {
                           alt="Preview"
                           className="max-w-[520px] max-h-[380px] border mb-2"
                         />
-                        <div className="text-xs text-gray-400 mb-2">
-                          Größe: {compressedSizes[idx] ? (compressedSizes[idx] / 1024).toFixed(1) : '?'} kB
-                        </div>
                         <button
                           className="mt-2 px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
                           onClick={() => handleDownload(previewUrls[idx], imageFiles[idx]?.name || `image${idx}`)}
@@ -510,7 +497,7 @@ function App() {
                   className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700"
                   onClick={handleDownloadAll}
                 >
-                  Alle komprimieren & herunterladen
+                  Alle herunterladen
                 </button>
               </div>
             )}
